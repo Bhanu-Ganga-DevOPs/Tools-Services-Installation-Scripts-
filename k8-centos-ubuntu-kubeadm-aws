@@ -1,0 +1,257 @@
+Kubernetes cluster Setup on AWS Using Kubeadm and Containerd
+Prerequisites
+A compatible Linux hosts: 2 GB or more of RAM per machine and 2 CPUs or more
+3 - Ubuntu 20.04 LTS Serves: 1x Manager (4GB RAM, 2 vCPU)t2.medium type, 2x Workers (1 GB, 1 Core) t2.micro type
+Full network connectivity between all machines in the cluster
+Unique hostname for each host. Change hostname of the machines using hostnamectl. For master nodes, runhostnamectl set-hostname master. For slaves, run hostnamectl set-hostname slave-01 hostnamectl set-hostname slave-02
+Certain ports are open on your machines(https://kubernetes.io/docs/reference/ports-and-protocols/)
+On Master Node
+6443/tcp for Kubernetes API Server
+2379-2380 for etcd server client API
+6783/tcp,6784/udp for Weavenet CNI
+10248-10260 for Kubelet API, Kube-scheduler, Kube-controller-manager, Read-Only Kubelet API, Kubelet health
+80,8080,443 Generic Ports
+30000-32767 for NodePort Services
+
+On Slave Nodes
+6783/tcp,6784/udp for Weavenet CNI
+10248-10260 for Kubelet API etc
+30000-32767 for NodePort Services
+
+Run on all nodes of the cluster as root user
+Disable SWAP
+You MUST disable swap in order for the kubelet to work properly
+swapoff -a
+sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+Install Containerd
+wget https://github.com/containerd/containerd/releases/download/v1.6.16/containerd-1.6.16-linux-amd64.tar.gz
+tar Cxzvf /usr/local containerd-1.6.16-linux-amd64.tar.gz
+wget https://raw.githubusercontent.com/containerd/containerd/main/containerd.service
+mkdir -p /usr/local/lib/systemd/system
+mv containerd.service /usr/local/lib/systemd/system/containerd.service
+systemctl daemon-reload
+systemctl enable --now containerd
+
+Install Runc
+wget https://github.com/opencontainers/runc/releases/download/v1.1.4/runc.amd64
+install -m 755 runc.amd64 /usr/local/sbin/runc
+
+Install CNI
+wget https://github.com/containernetworking/plugins/releases/download/v1.2.0/cni-plugins-linux-amd64-v1.2.0.tgz
+mkdir -p /opt/cni/bin
+tar Cxzvf /opt/cni/bin cni-plugins-linux-amd64-v1.2.0.tgz
+
+Install CRICTL
+VERSION="v1.26.0" # check latest version in /releases page
+wget https://github.com/kubernetes-sigs/cri-tools/releases/download/$VERSION/crictl-$VERSION-linux-amd64.tar.gz
+sudo tar zxvf crictl-$VERSION-linux-amd64.tar.gz -C /usr/local/bin
+rm -f crictl-$VERSION-linux-amd64.tar.gz
+
+cat <<EOF | sudo tee /etc/crictl.yaml
+runtime-endpoint: unix:///run/containerd/containerd.sock
+image-endpoint: unix:///run/containerd/containerd.sock
+timeout: 2
+debug: false
+pull-image-on-create: false
+EOF
+
+Forwarding IPv4 and letting iptables see bridged traffic
+https://kubernetes.io/docs/setup/production-environment/container-runtimes/#forwarding-ipv4-and-letting-iptables-see-bridged-traffic
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+overlay
+br_netfilter
+EOF
+sudo modprobe overlay
+sudo modprobe br_netfilter
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward = 1
+EOF
+sudo sysctl --system
+sysctl net.bridge.bridge-nf-call-iptables net.bridge.bridge-nf-call-ip6tables net.ipv4.ip_forward
+modprobe br_netfilter
+sysctl -p /etc/sysctl.conf
+
+Install kubectl, kubelet and kubeadm
+apt-get update && sudo apt-get install -y apt-transport-https curl
+curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+cat <<EOF | sudo tee /etc/apt/sources.list.d/kubernetes.list
+deb https://apt.kubernetes.io/ kubernetes-xenial main
+EOF
+apt update -y
+apt install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+
+Run on Master Node and follow the instructions
+kubeadm config images pull
+# kubeadm init
+kubeadm init --apiserver-advertise-address=10.139.0.42 --ignore-preflight-errors all --pod-network-cidr=172.17.0.1/16 --token-ttl 0
+
+Install any CNI plugin. We will use weavenet
+kubectl apply -f https://github.com/weaveworks/weave/releases/download/v2.8.1/weave-daemonset-k8s.yaml
+
+Run on Slave Nodes
+Run the join command obtained from kubeadm init output on all Workers nodes. Example
+kubeadm join \
+192.168.56.2:6443 --token … --discovery-token-ca-cert-hash sha256 . . . .
+
+Test the setup
+kubectl get nodes
+kubectl get pods -A
+
+Run a demo app
+kubectl run nginx --image=nginx --port=80 
+kubectl expose pod nginx --port=80 --type=NodePort
+
+
+
+
+
+Kubernetes cluster with Kubeadm - For practice with less steps (CentOs)
+
+Pre-requisites
+Ec2 instance - I am creating 2 instances 1 as master and the other as worker
+Master - t2.medium -amazon linux
+Worker - t2.micro  - amazon linux
+Security group - create 2 security group 1 for master and another for worker
+With few ports open
+
+On master node security group 
+6443/tcp for Kubernetes API Server
+2379-2380 for etcd server client API
+6783/tcp,6784/udp for Weavenet CNI
+10248-10260 for Kubelet API, Kube-scheduler, Kube-controller-manager, Read-Only Kubelet API, Kubelet health
+80,8080,443 Generic Ports
+30000-32767 for NodePort Services 
+
+On worker node security group
+
+6783/tcp,6784/udp for Weavenet CNI
+10248-10260 for Kubelet API etc
+30000-32767 for NodePort Services
+
+
+Steps to be done on both master and worker: 
+Remove the swap memory 
+Swapoff -a	
+Disable the Selinux and reboot the system
+Vim /etc/systemconf/selinux - set the selinux to disabled
+Set SELINUX=disabled
+Reboot the system
+Install docker,enable and restart the docker
+Yum install docker -y
+Syatemctl enable docker
+Systemctl restart docker
+Install kubeadm
+cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
+
+[kubernetes]
+
+name=Kubernetes
+
+baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-\$basearch
+
+enabled=1
+
+gpgcheck=1
+
+gpgkey=https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+
+exclude=kubelet kubeadm kubectl
+
+EOF
+
+
+sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+Enable and restart kubeadm
+Systemctl enable kubelet
+Systemctl restart kubelet
+Kubectl init
+Copy the config file
+curl https://raw.githubusercontent.com/projectcalico/calico/v3.25.0/manifests/calico.yaml -O
+kubectl apply -f calico.yaml
+
+Kubectl get nodes ………….
+
+
+
+
+
+Cluster on UBUNTU through Kubeadm
+Apt update
+apt install -y apt-transport-https
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+
+sudo systemctl enable docker
+Sudo systemctl status docker
+
+Apt update
+curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo tee /usr/share/keyrings/kubernetes.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/kubernetes.gpg] http://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee -a /etc/apt/sources.list
+apt update
+sudo apt install kubeadm kubelet kubectl
+sudo apt-mark hold kubeadm kubelet kubectl
+swapoff -a
+sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+sudo vim /etc/modules-load.d/containerd.conf
+overlay
+br_netfilter
+
+sudo modprobe overlay
+sudo modprobe br_netfilter
+sudo vim /etc/sysctl.d/kubernetes.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+
+
+sysctl --system
+Edit host file on each node vim /etc/hosts with all the server that needed to be added to the cluster once their hostname has been changed
+sudo vim /etc/default/kubelet
+KUBELET_EXTRA_ARGS="--cgroup-driver=cgroupfs"
+
+systemctl daemon-reload
+systemctl restart kubelet
+sudo vim /etc/docker/daemon.json
+{
+      "exec-opts": ["native.cgroupdriver=systemd"],
+      "log-driver": "json-file",
+      "log-opts": {
+      "max-size": "100m"
+   },
+       "storage-driver": "overlay2"
+       }
+
+systemctl daemon-reload
+systemctl restart docker
+sudo vim /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+Environment="KUBELET_EXTRA_ARGS=--fail-swap-on=false"
+systemctl daemon-reload
+systemctl restart kubelet
+apt remove containerd
+apt update;apt install containerd.io
+rm /etc/containerd/config.toml
+systemctl restart containerd
+kubeadm init --apiserver-advertise-address=10.139.0.42 --ignore-preflight-errors all --pod-network-cidr=172.17.0.1/16 --token-ttl 0
+curl https://raw.githubusercontent.com/projectcalico/calico/v3.25.0/manifests/calico.yaml -O
+kubectl apply -f calico.yaml
+
+Touble shooting K8-cluster
+env | grep -i kube
+systemctl status docker
+systemctl status kubelet
+netstat -pnlt | grep 6443
+firewall-cmd --list-all
+journalctl -xeu kubelet
+kubelet reset
+kubelet init
+yum install firewalld
+systemctl start firewalld
+systemctl enable firewalld
+systemctl status firewalld
+firewall-cmd --zone=public --add-port=6443/tcp --permanent
+firewall-cmd --reload
